@@ -1,0 +1,141 @@
+Date: Fri, 06 Aug 2010 10:12:54 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] Patch 6/7
+
+
+This fixes a bug that has been discovered by Julien Bourgeois:
+
+If a file within dazukofs is mmaped and the content is read and 
+afterwards the
+file is modified via write(), the content shown via mmap() is still the 
+same as
+it was before the write() call.
+In other words, the content modification done by write() is not visible for
+readers that use mmap.
+
+The reason is, that with mmap() memory pages are created for the _upper_ 
+file,
+whereas write() and read() only access pages that belong to the lower file.
+When a lower page is modified after its corresponding upper page has been
+created, the upper page is not updated and thus both pages are out of sync.
+
+This patch ensures that the upper pages that correspond to the file 
+content that
+is modified via write() are marked dirty, so that a subsequent read from it
+causes the content to be refreshed from disk.
+
+
+diff -Nurp dazukofs-3.1.3-patch5/event.c dazukofs-3.1.3-patch6/event.c
+--- dazukofs-3.1.3-patch5/event.c	2010-08-05 17:00:01.000000000 +0200
++++ dazukofs-3.1.3-patch6/event.c	2010-08-05 17:14:23.000000000 +0200
+@@ -1033,6 +1033,7 @@ static int event_on_working_list(struct 
+ 	return ret;
+ }
+ 
++/*
+  * dazukofs_get_event - get an event to process
+  * @group_id: id of the group we belong to
+  * @event_id: to be filled in with the new event id
+diff -Nurp dazukofs-3.1.3-patch5/file.c dazukofs-3.1.3-patch6/file.c
+--- dazukofs-3.1.3-patch5/file.c	2010-08-05 16:58:49.000000000 +0200
++++ dazukofs-3.1.3-patch6/file.c	2010-08-06 10:04:06.000000000 +0200
+@@ -28,6 +28,7 @@
+ #include <linux/fs_stack.h>
+ #include <linux/cred.h>
+ #include <linux/sched.h>
++#include <linux/pagemap.h>
+ 
+ #include "dazukofs_fs.h"
+ #include "event.h"
+@@ -70,7 +71,7 @@ static ssize_t dazukofs_read(struct file
+ 	if (!lower_file->f_op || !lower_file->f_op->read)
+ 		return -EINVAL;
+ 
+-	err = lower_file->f_op->read(lower_file, buf, count, &pos_copy);
++	err = vfs_read(lower_file, buf, count, &pos_copy);
+ 
+ 	lower_file->f_pos = pos_copy;
+ 	*ppos = pos_copy;
+@@ -85,36 +86,75 @@ static ssize_t dazukofs_read(struct file
+ 	return err;
+ }
+ 
++
++/** 
++ * Description:
++ * Get all existing pages of the given interval that belong to the given 
++ * file and mark these pages dirty. 
++ */ 
++static void mark_pages_dirty(struct file *file, size_t count, loff_t pos)
++{
++	struct page *page;
++	pgoff_t start;
++	pgoff_t end;
++	pgoff_t i;
++
++	if (unlikely(!count))
++		return;
++
++	start = pos >> PAGE_SHIFT;
++	end = (pos + count) >> PAGE_SHIFT;
++
++	for (i = start; i <= end; i++) {
++		page = find_lock_page(file->f_mapping, i);
++		if (!page) {
++			// not yet accessed, get next one
++			continue;
++		}
++		ClearPageUptodate(page);
++		unlock_page(page);
++	}
++}
++
++
+ /**
+  * Description: Called by write(2) and related system calls.
+  */
+ static ssize_t dazukofs_write(struct file *file, const char *buf,
+ 			      size_t count, loff_t *ppos)
+ {
+-	int err;
+ 	struct file *lower_file = get_lower_file(file);
+ 	struct inode *inode = file->f_dentry->d_inode;
+ 	struct inode *lower_inode = get_lower_inode(inode);
+ 	loff_t pos_copy = *ppos;
++	ssize_t rv;
+ 
+ 	if (!lower_file->f_op || !lower_file->f_op->write)
+ 		return -EINVAL;
+ 
+-	err = lower_file->f_op->write(lower_file, buf, count, &pos_copy);
++	mutex_lock(&inode->i_mutex);
++	rv = vfs_write(lower_file, buf, count, &pos_copy);
+ 
+ 	lower_file->f_pos = pos_copy;
+-	*ppos = pos_copy;
+ 
+-	if (err >= 0)
++	if (rv >= 0) {
++                /* mark all upper pages concerned by the write to lower file as 
++                   not Uptodate.
++                   NOTE: we dont use the offset given with ppos, but calculate 
++                   it from the _returned_ value, since in some cases (O_APPEND)
++                   the file pointer will have been modified subsequently. */
++		mark_pages_dirty(file, rv, pos_copy - rv);
+ 		fsstack_copy_attr_atime(inode, lower_inode);
++	}
+ 
++	*ppos = pos_copy;
+ 	memcpy(&(file->f_ra), &(lower_file->f_ra),
+ 	       sizeof(struct file_ra_state));
+ 
+-	mutex_lock(&inode->i_mutex);
+ 	i_size_write(inode, i_size_read(lower_inode));
+ 	mutex_unlock(&inode->i_mutex);
+-	return err;
++
++	return rv;
+ }
+ 
+ /**

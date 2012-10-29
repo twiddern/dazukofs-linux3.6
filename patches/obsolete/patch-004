@@ -1,0 +1,38 @@
+Date: Tue, 21 Apr 2009 19:01:29 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] patch 4 for dazukofs release 3.0.0 
+
+
+Bug description:
+The attempt to mount dazukofs over a regular file results in a kernel oops.
+
+The solution is to ensure that the mount point is a directory.
+(This is a repost of the patch posted on the 9th Feb. 2009. It is only
+posted for the sake of completeness.)
+
+
+Index: dazukofs-3.0.0/super.c
+===================================================================
+--- dazukofs-3.0.0.orig/super.c	2009-04-30 11:50:59.381235966 +0200
++++ dazukofs-3.0.0/super.c	2009-04-30 11:51:51.721234460 +0200
+@@ -171,6 +171,11 @@ static int dazukofs_read_super(struct su
+ 		goto out_put;
+ 	}
+ 
++	if (!S_ISDIR(lower_root->d_inode->i_mode)) {
++		err = -ENOENT;
++		goto out_put;
++	}
++
+ 	SET_LOWER_SB(sb, lower_root->d_sb);
+ 	sb->s_maxbytes = lower_root->d_sb->s_maxbytes;
+ 	SET_LOWER_DENTRY(sb->s_root, lower_root, lower_mnt);
+@@ -213,6 +218,7 @@ static int dazukofs_get_sb(struct file_s
+ 
+ out_abort:
+ 	up_write(&sb->s_umount);
++	dput(sb->s_root);
+ 	deactivate_super(sb);
+ out:
+ 	return err;

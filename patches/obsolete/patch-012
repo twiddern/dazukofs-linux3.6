@@ -1,0 +1,227 @@
+Date: Thu, 08 Jul 2010 18:59:09 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] Patch 5/5
+
+
+This is a patch from Philipp Rosenberger.
+
+It is not a bugfix but implements polling for dazukofs.
+(Although I know that new features are not welcome until dazukofs
+is mainline, this one might be useful).
+
+
+diff -Nurp dazukofs-3.1.3-patch4/event.c dazukofs-3.1.3-patch5/event.c
+--- dazukofs-3.1.3-patch4/event.c	2010-07-08 18:10:41.000000000 +0200
++++ dazukofs-3.1.3-patch5/event.c	2010-07-08 18:18:40.000000000 +0200
+@@ -27,6 +27,7 @@
+ #include <linux/cred.h>
+ #include <linux/pid.h>
+ #include <linux/slab.h>
++#include <linux/poll.h>
+ 
+ #include "event.h"
+ #include "dev.h"
+@@ -357,6 +358,7 @@ static struct dazukofs_group *__create_g
+ 	}
+ 	grp->name_length = strlen(name);
+ 	init_waitqueue_head(&grp->queue);
++	init_waitqueue_head(&grp->poll_queue);
+ 	INIT_LIST_HEAD(&grp->todo_list.list);
+ 	INIT_LIST_HEAD(&grp->working_list.list);
+ 	if (track)
+@@ -641,11 +643,11 @@ assign_event_to_groups(struct dazukofs_e
+ 
+ 			/* notify someone to handle the event */
+ 			wake_up(&grp->queue);
+-
++			wake_up(&grp->poll_queue);
++			
+ 			i++;
+ 		}
+ 	}
+-
+ 	mutex_unlock(&evt->assigned_mutex);
+ 	mutex_unlock(&work_mutex);
+ }
+@@ -872,6 +874,7 @@ void set_event_pending(struct dazukofs_g
+ {
+ 	mutex_lock(&work_mutex);
+ 	list_add(&ec->list, &grp->working_list.list);
++	wake_up(&grp->poll_queue);
+ 	mutex_unlock(&work_mutex);
+ }
+ 
+@@ -989,7 +992,7 @@ error_out1:
+ }
+ 
+ /**
+- * is_event_available - check if an event is available for processing
++ * event_on_todo_list - check if an event is available for processing
+  * @grp: the group
+  *
+  * Description: This function simply checks if there are any events posted
+@@ -997,7 +1000,7 @@ error_out1:
+  *
+  * Returns 0 if there are no events in the todo list.
+  */
+-static int is_event_available(struct dazukofs_group *grp)
++static int event_on_todo_list(struct dazukofs_group *grp)
+ {
+ 	int ret = 0;
+ 
+@@ -1009,6 +1012,27 @@ static int is_event_available(struct daz
+ 	return ret;
+ }
+ 
++/**
++ * event_on_working_list - check if an event is available for processing
++ * @grp: the group
++ *
++ * Description: This function simply checks if there are any events posted
++ * in the group's todo list.
++ *
++ * Returns 0 if there are no events in the todo list.
++ */
++static int event_on_working_list(struct dazukofs_group *grp)
++{
++	int ret = 0;
++
++	mutex_lock(&work_mutex);
++	if (!list_empty(&grp->working_list.list))
++		ret = 1;
++	mutex_unlock(&work_mutex);
++
++	return ret;
++}
++
+  * dazukofs_get_event - get an event to process
+  * @group_id: id of the group we belong to
+  * @event_id: to be filled in with the new event id
+@@ -1046,7 +1070,7 @@ int dazukofs_get_event(unsigned long gro
+ 
+ 	while (1) {
+ 		ret = wait_event_freezable(grp->queue,
+-					   is_event_available(grp) ||
++					   event_on_todo_list(grp) ||
+ 					   grp->deprecated);
+ 		if (ret != 0)
+ 			break;
+@@ -1078,8 +1102,41 @@ int dazukofs_get_event(unsigned long gro
+ 		atomic_dec(&grp->use_count);
+ 		return ret;
+ 	}
+-
+ 	*pgrp = grp;
+ 	*pec = ec;
+ 	return 0;
+ }
++
++void dazukofs_do_poll(unsigned long group_id, struct file *dev_file, 
++                      poll_table *wait, unsigned int *mask)
++{
++	struct dazukofs_group *grp = NULL;
++	struct list_head *pos;
++	int found = 0;
++
++	mutex_lock(&work_mutex);
++	list_for_each(pos, &group_list.list) {
++		grp = list_entry(pos, struct dazukofs_group, list);
++		if (!grp->deprecated && grp->group_id == group_id) {
++			atomic_inc(&grp->use_count);
++			found = 1;
++			break;
++		}
++	}
++	mutex_unlock(&work_mutex);
++
++	if (!found) {
++		*mask = POLLERR; /* is this correct ? */
++		return;
++	}
++
++	poll_wait(dev_file, &grp->poll_queue, wait);
++	if (event_on_todo_list(grp))
++		*mask = POLLIN | POLLRDNORM;
++	if (event_on_working_list(grp))
++		*mask = POLLOUT | POLLWRNORM;
++
++	atomic_dec(&grp->use_count);
++	return;
++}
++
+diff -Nurp dazukofs-3.1.3-patch4/event.h dazukofs-3.1.3-patch5/event.h
+--- dazukofs-3.1.3-patch4/event.h	2010-07-08 16:39:46.000000000 +0200
++++ dazukofs-3.1.3-patch5/event.h	2010-07-08 16:40:18.000000000 +0200
+@@ -23,6 +23,7 @@
+ 
+ #include <linux/list.h>
+ #include <linux/wait.h>
++#include <linux/poll.h>
+ 
+ 
+ struct dazukofs_event {
+@@ -54,6 +55,7 @@ struct dazukofs_group {
+ 	unsigned long group_id;
+ 	struct dazukofs_event_container todo_list;
+ 	wait_queue_head_t queue;
++	wait_queue_head_t poll_queue;
+ 	struct dazukofs_event_container working_list;
+ 	atomic_t use_count;
+ 	int tracking;
+@@ -64,6 +66,8 @@ struct dazukofs_group {
+ extern int dazukofs_init_events(void);
+ extern void dazukofs_destroy_events(void);
+ 
++extern void dazukofs_do_poll(unsigned long group_id, struct file *dev_file, 
++                      poll_table *wait, unsigned int *mask);
+ extern void set_event_pending(struct dazukofs_group *grp,
+                        struct dazukofs_event_container *ec);
+ extern void unclaim_event(struct dazukofs_group *grp, 
+diff -Nurp dazukofs-3.1.3-patch4/group_dev.c dazukofs-3.1.3-patch5/group_dev.c
+--- dazukofs-3.1.3-patch4/group_dev.c	2010-07-08 15:30:19.000000000 +0200
++++ dazukofs-3.1.3-patch5/group_dev.c	2010-07-08 16:42:59.000000000 +0200
+@@ -22,6 +22,7 @@
+ #include <linux/fs.h>
+ #include <linux/cdev.h>
+ #include <linux/uaccess.h>
++#include <linux/poll.h>
+ 
+ #include "dazukofs_fs.h"
+ #include "event.h"
+@@ -137,6 +138,15 @@ static ssize_t dazukofs_group_write(int 
+ 	return ret;
+ }
+ 
++static unsigned int dazukofs_group_poll(int group_id, struct file *file,
++					poll_table *wait)
++{
++	unsigned int mask = 0;
++	dazukofs_do_poll(group_id, file, wait, &mask);
++	return mask;
++}
++
++
+ #define DECLARE_GROUP_FOPS(group_id) \
+ static int \
+ dazukofs_group_open_##group_id(struct inode *inode, struct file *file) \
+@@ -161,6 +171,11 @@ dazukofs_group_write_##group_id(struct f
+ { \
+ 	return dazukofs_group_write(group_id, file, buffer, length, pos); \
+ } \
++static unsigned int \
++dazukofs_group_poll_##group_id(struct file *file, poll_table *wait) \
++{ \
++	return dazukofs_group_poll(group_id, file, wait); \
++} \
+ static const struct file_operations group_fops_##group_id = { \
+ 	.owner		= THIS_MODULE, \
+ 	.open		= dazukofs_group_open_##group_id, \
+@@ -168,6 +183,7 @@ static const struct file_operations grou
+ 	.read		= dazukofs_group_read_##group_id, \
+ 	.write		= dazukofs_group_write_##group_id, \
+ 	.llseek 	= no_llseek, \
++	.poll		= dazukofs_group_poll_##group_id, \
+ };
+ 
+ DECLARE_GROUP_FOPS(0)

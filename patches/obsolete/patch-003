@@ -1,0 +1,74 @@
+Date: Tue, 21 Apr 2009 18:53:38 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] patch 3 for dazukofs release 3.0.0 
+
+
+Bug description:
+If the setuid bit of a file that resided within a dazukofs mount (over 
+an ext3fs) was set
+and the file was accessed afterwards a kernel oops appeared.
+The reason seemed to be the following:
+
+The dazukofs_setxattr() function sets the attributes of an underlaying 
+filesystems inode
+by calling the notify_change() function provided by the vfs kernel code 
+(I assume this is
+done to let the vfs take some default actions in case that the 
+setxattr() function
+is not defined for this inode).
+The problem is, that the vfs apparently modifies the given attributes in 
+some way
+and under some circumstances, before they reach the dazukofs code.
+
+Since the vfs has already passed the attributes to the dazukofs kernel 
+after possibly
+modifying the attributes _once_, the  call back to notify_change() might 
+trigger a _second_
+modification (or influence the further processing in some other way) 
+which may result
+in the attempt to set invalid values for the inodes attributes.
+
+I think it is quite dangerous to jump back from the dazukofs kernel code 
+to a higher
+vfs level, anyway, since we can never be sure that the vfs code does not 
+modify
+the given parameters somehow.
+
+However, this patch calls the underlaying inodes setxattributes() 
+function directly
+and only uses the notify_change function to trigger the vfs default action.
+
+
+Index: dazukofs-3.0.0/inode.c
+===================================================================
+--- dazukofs-3.0.0.orig/inode.c	2009-04-30 11:51:11.131234227 +0200
++++ dazukofs-3.0.0/inode.c	2009-04-30 11:51:49.921234903 +0200
+@@ -468,10 +468,24 @@ static int dazukofs_setattr(struct dentr
+ 	struct inode *lower_inode = GET_LOWER_INODE(inode);
+ 	int err;
+ 
+-	err = notify_change(lower_dentry, ia);
+ 
+-	fsstack_copy_attr_all(inode, lower_inode, NULL);
+-	fsstack_copy_inode_size(inode, lower_inode);
++	if (!lower_inode->i_op || !lower_inode->i_op->setattr)
++		/* XXX: at this point it is too late to handle inodes properly that do NOT
++		specify setattr(). VFS would normally call inode_setattr() in
++		this case. So to force this we jump back to notify_change which will
++		handle this for us. But this is dangerous:
++		The attributes might be modified by notify_change() in a way
++		that results in invalid attributes. This seems to be the case
++		if the inode for which this function is called has the setuid
++		or setgid bit set */
++		err = notify_change(lower_dentry, ia);
++	else
++		err = lower_inode->i_op->setattr(lower_dentry, ia);
++
++	if (!err) {
++		fsstack_copy_attr_all(inode, lower_inode, NULL);
++		fsstack_copy_inode_size(inode, lower_inode);
++	}
+ 
+ 	return err;
+ }

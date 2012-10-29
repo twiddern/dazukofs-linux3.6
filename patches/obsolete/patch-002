@@ -1,0 +1,86 @@
+Date: Tue, 21 Apr 2009 18:18:46 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] patch 2 for dazukofs release 3.0.0 
+
+
+Bug description:
+dazukofs uses the generic_file_mmap() function provided by the linux 
+kernel api
+to handle memory mapping. This function in turn calls the 
+dazukofs_readpage()
+provided by dazuko.
+dazukofs_readpage() calls the readpage() operation of the address_space 
+object of the
+underlaying filesystems inodes. But the underlaying filesystem might not 
+have initialized
+this struct to provide a readpage() function (since not all filesystems 
+provide memory mapping
+for certain file types, i.e. directories). In this case the readpage() 
+function of the address_space
+object is set to NULL, resulting in an oops when dazukofs tries to call it.
+
+The solution is not to use the generic function(s), but to provide an 
+own function,
+that calls the underlaying filesystems function only if it is defined.
+
+Similar problems may occur with the generic_file_aio_read() and 
+generic_file_aio_write() functions
+used by dazukofs, so they have been removed, too.
+
+
+Index: dazukofs-3.0.0/file.c
+===================================================================
+--- dazukofs-3.0.0.orig/file.c	2009-04-30 11:51:11.301233919 +0200
++++ dazukofs-3.0.0/file.c	2009-04-30 11:51:48.321234895 +0200
+@@ -272,6 +272,17 @@ out:
+ 	return err;
+ }
+ 
++static int dazukofs_mmap (struct file *file, struct vm_area_struct *vm)
++{
++	struct file *lower_file = GET_LOWER_FILE(file);
++
++	if (!lower_file || !lower_file->f_op || !lower_file->f_op->mmap)
++		return -ENODEV;
++
++	return lower_file->f_op->mmap(file, vm);
++}
++
++
+ /**
+  * Unused operations:
+  *   - owner
+@@ -295,18 +306,15 @@ out:
+ struct file_operations dazukofs_main_fops = {
+ 	.llseek		= dazukofs_llseek,
+ 	.read		= dazukofs_read,
+-	.aio_read	= generic_file_aio_read,
+ 	.write		= dazukofs_write,
+-	.aio_write	= generic_file_aio_write,
+ 	.readdir	= dazukofs_readdir,
+ 	.ioctl		= dazukofs_ioctl,
+-	.mmap		= generic_file_mmap,
++	.mmap		= dazukofs_mmap,
+ 	.open		= dazukofs_open,
+ 	.flush		= dazukofs_flush,
+ 	.release	= dazukofs_release,
+ 	.fsync		= dazukofs_fsync,
+ 	.fasync		= dazukofs_fasync,
+-	.splice_read	= generic_file_splice_read,
+ };
+ 
+ /**
+@@ -335,11 +343,10 @@ struct file_operations dazukofs_main_fop
+ const struct file_operations dazukofs_dir_fops = {
+ 	.readdir	= dazukofs_readdir,
+ 	.ioctl		= dazukofs_ioctl,
+-	.mmap		= generic_file_mmap,
++	.mmap		= dazukofs_mmap,
+ 	.open		= dazukofs_open,
+ 	.flush		= dazukofs_flush,
+ 	.release	= dazukofs_release,
+ 	.fsync		= dazukofs_fsync,
+ 	.fasync		= dazukofs_fasync,
+-	.splice_read	= generic_file_splice_read,
+ };

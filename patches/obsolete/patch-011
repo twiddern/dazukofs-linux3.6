@@ -1,0 +1,86 @@
+Date: Thu, 08 Jul 2010 18:29:44 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] Patch 1/5 
+
+
+Hi all,
+
+here are some patches against the recent stable dazukofs version (3.1.3).
+Hope you find them useful.
+
+Regards,
+Lino Sanfilippo
+
+
+Patch 1:
+Implements the gettr() inode operation. This is for filesystems that 
+implement
+their own operation instead of using the generic one (like xfs).
+
+
+
+
+diff -Nurp dazukofs-3.1.3/inode.c dazukofs-3.1.3-patch1/inode.c
+--- dazukofs-3.1.3/inode.c	2010-05-30 12:57:50.000000000 +0200
++++ dazukofs-3.1.3-patch1/inode.c	2010-07-06 17:13:52.000000000 +0200
+@@ -466,6 +466,35 @@ static int dazukofs_permission(struct in
+ 	return inode_permission(get_lower_inode(inode), mask);
+ }
+ 
++
++/**
++ * Description: Called by the VFS to get attributes for a file. 
++ */
++static int dazukofs_getattr(struct vfsmount *mnt, struct dentry *dentry, 
++                            struct kstat *stat)
++{
++	struct inode *inode;
++	struct inode *lower_inode;
++	struct dentry *lower_dentry;
++	struct vfsmount *lower_mnt;
++	int rv;
++
++	inode = dentry->d_inode;
++	lower_inode = get_lower_inode(inode);
++
++	if (!lower_inode->i_op->getattr) {
++		generic_fillattr(dentry->d_inode, stat);
++		return 0;
++	}
++	/* call fs specific getattr() */
++	lower_mnt = mntget(get_lower_mnt(dentry));
++	lower_dentry = get_lower_dentry(dentry);
++	rv = lower_inode->i_op->getattr(lower_mnt, lower_dentry, stat);
++
++	mntput(lower_mnt);
++	return rv;
++}
++
+ /**
+  * Description: Called by the VFS to set attributes for a file. This method
+  * is called by chmod(2) and related system calls.
+@@ -768,6 +797,7 @@ static struct inode_operations dazukofs_
+ 	.follow_link	= dazukofs_follow_link,
+ 	.put_link	= dazukofs_put_link,
+ 	.permission	= dazukofs_permission,
++	.getattr	= dazukofs_getattr,
+ 	.setattr	= dazukofs_setattr,
+ 	.setxattr	= dazukofs_setxattr,
+ 	.getxattr	= dazukofs_getxattr,
+@@ -796,6 +826,7 @@ static struct inode_operations dazukofs_
+ 	.mknod		= dazukofs_mknod,
+ 	.rename		= dazukofs_rename,
+ 	.permission	= dazukofs_permission,
++	.getattr	= dazukofs_getattr,
+ 	.setattr	= dazukofs_setattr,
+ 	.setxattr	= dazukofs_setxattr,
+ 	.getxattr	= dazukofs_getxattr,
+@@ -824,6 +855,7 @@ static struct inode_operations dazukofs_
+  */
+ static struct inode_operations dazukofs_main_iops = {
+ 	.permission	= dazukofs_permission,
++	.getattr	= dazukofs_getattr,
+ 	.setattr	= dazukofs_setattr,
+ 	.setxattr	= dazukofs_setxattr,
+ 	.getxattr	= dazukofs_getxattr,

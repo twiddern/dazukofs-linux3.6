@@ -1,0 +1,75 @@
+Date: Thu, 08 Jul 2010 18:38:00 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] Patch 2/5
+
+
+This patch enables behaviour compatible with BSD signal semantics by
+making the read() calls
+on the dazukofs devices restartable across signals.
+
+
+
+diff -Nurp dazukofs-3.1.3-patch1/group_dev.c dazukofs-3.1.3-patch2/group_dev.c
+--- dazukofs-3.1.3-patch1/group_dev.c	2010-05-30 12:58:12.000000000 +0200
++++ dazukofs-3.1.3-patch2/group_dev.c	2010-07-06 17:20:55.000000000 +0200
+@@ -66,9 +66,7 @@ static ssize_t dazukofs_group_read(int g
+ 	err = dazukofs_get_event(group_id, &event_id, &fd, &pid);
+ 	if (err) {
+ 		/* convert some errors to acceptable read(2) errno values */
+-		if (err == -ERESTARTSYS)
+-			return -EINTR;
+-		else if (err == -ENFILE)
++		if (err == -ENFILE)
+ 			return -EIO;
+ 		return err;
+ 	}
+@@ -125,8 +123,6 @@ static ssize_t dazukofs_group_write(int 
+ 	if (ret == 0) {
+ 		*pos += length;
+ 		ret = length;
+-	} else if (ret == -ERESTARTSYS) {
+-		ret = -EINTR;
+ 	}
+ 
+ 	return ret;
+diff -Nurp dazukofs-3.1.3-patch1/test/showfiles.c dazukofs-3.1.3-patch2/test/showfiles.c
+--- dazukofs-3.1.3-patch1/test/showfiles.c	2008-10-25 00:08:30.000000000 +0200
++++ dazukofs-3.1.3-patch2/test/showfiles.c	2010-07-06 17:27:01.000000000 +0200
+@@ -25,7 +25,7 @@
+ #include <errno.h>
+ #include <signal.h>
+ 
+-static int running = 1;
++static volatile sig_atomic_t running = 1;
+ 
+ static void print_access(struct dazukofs_access *acc)
+ {
+@@ -48,12 +48,24 @@ static void sigterm(int sig)
+ 
+ int main(void)
+ {
++        struct sigaction sa;
+ 	dazukofs_handle_t hndl;
+ 	struct dazukofs_access acc;
+ 
+-	signal(SIGHUP, sigterm);
+-	signal(SIGINT, sigterm);
+-	signal(SIGTERM, sigterm);
++        memset(&sa, 0, sizeof(sa));
++	sa.sa_handler = sigterm;
++	if (sigaction(SIGHUP, &sa, NULL)) {
++		perror("install SIGHUP handler");
++		return -1;
++	}
++	if (sigaction(SIGINT, &sa, NULL)) {
++		perror("install SIGINT handler");
++		return -1;
++	}
++	if (sigaction(SIGTERM, &sa, NULL)) {
++		perror("install SIGTERM handler");
++		return -1;
++	}
+ 
+ 	hndl = dazukofs_open("dazukofs_example", DAZUKOFS_TRACK_GROUP);
+ 	if (!hndl) {

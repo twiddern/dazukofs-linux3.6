@@ -1,0 +1,124 @@
+Date: Wed, 29 Apr 2009 17:25:39 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] patch 9 for dazukofs release 3.0.0
+
+
+Bug description:
+
+Dazukofs uses the lookup_one_len() kernel api to get an entry from the 
+underlaying filesystem
+ that is not in dentry cache yet.
+lookup_one_len() in turn calls the revalidate() operation of the lower 
+dentry (if it is defined)
+with a NULL pointer passed as nameidata.
+This is dangerous, since the underlaying dentry might not be prepared to 
+be given
+a NULL nameidata. If it is accessed while revalidate() is processed, it 
+results in a kernel oops .
+(The comment in the kernel source file namei.c where lookup_one_len() is 
+defined, also points
+out that this function is for internal use only, and should only be 
+used, if the filesystem is
+prepared to handle NULL nameidata pointers in revalidate(). But we can 
+never be sure that
+the _underlaying_ filesystem is prepared to handle this)
+
+Ironically even dazukofs itself is not prepared to handle a NULL 
+nameidata passed to
+the revalidate() function. So there is an easy way to trigger the bug 
+that is described here:
+
+1. mount dazukofs over an ext3 directory  that contains the file "testfile".
+Note that ext3 does not specify a revalidate() operation for its dentries.
+# mount -t dazukofs /testdir /testdir 
+2. force dazukofs to load the underlaying dentry of "testfile". Since 
+the lower
+dentry does not use revalidate() nothing bad happens.
+# file /testdir/testfile
+3.  mount dazukofs a second time over the same mountpoint
+# mount -t dazukofs /testdir /testdir
+4. access testfile again: this will call revalidate() of the underlaying 
+dazukofs()
+    which returns immediately since the underlaying filesystem (ext3) has no
+    revalidate() defined
+5. mount dazukofs a third time over the same mountpoint
+#mount -t dazukofs /testdir /testdir
+6. access testfile again: this time the underlaying dazukofs sees that 
+there is
+   a revalidate() defined (by the dazukofs below it) and tries to 
+restore the nameidata.
+   But this is NULL, so an oops occurs.
+
+
+As stated above this bug will not only trigger if dazukofs is mounted 
+multiple times
+over the same mountpoint. Indeed it will alway happen if dazukofs is 
+mounted over
+a filesystem that
+
+1. specifies the revalidate() operation for its dentries
+2. accesses the nameidata object while processing revalidate()
+3. is not prepared that nameidata may be NULL
+
+The bug fix is to use the vfs_path_lookup() kernel api instead of 
+lookup_one_len(),
+since here we can always provide a nameidata that is not NULL.
+
+
+Index: dazukofs-3.0.0/inode.c
+===================================================================
+--- dazukofs-3.0.0.orig/inode.c	2009-04-30 11:52:34.341234711 +0200
++++ dazukofs-3.0.0/inode.c	2009-04-30 11:52:42.731234440 +0200
+@@ -129,6 +129,39 @@ out:
+ 	return err;
+ }
+ 
++static struct dentry *dazukofs_lookup_one_lower(const char *name,
++						struct dentry *base,
++						struct nameidata *nd)
++{
++	struct dentry *lower_base;
++	struct vfsmount *lower_mnt;
++	struct vfsmount *vfsmount_save;
++	struct dentry *dentry_save;
++	struct dentry *result;
++	int err;
++
++	lower_base = GET_LOWER_DENTRY(base);
++	lower_mnt = GET_LOWER_MNT(base);
++
++	vfsmount_save = nd->path.mnt;
++	dentry_save = nd->path.dentry;
++
++	err = vfs_path_lookup(lower_base, lower_mnt, name, nd->flags, nd);
++	if (err) {
++		result = ERR_PTR(err);
++		goto undo;
++	}
++	/* we dont need the mount */
++	mntput(nd->path.mnt);
++	result = nd->path.dentry;
++undo:
++	nd->path.mnt = vfsmount_save;
++	nd->path.dentry = dentry_save;
++
++	return result;
++}
++
++
+ /**
+  * Description: Called when the VFS needs to look up an inode in a parent
+  * directory. The name to look for is found in the dentry. This method
+@@ -161,9 +194,9 @@ static struct dentry *dazukofs_lookup(st
+ 	dentry->d_op = &dazukofs_dops;
+ 
+ 	lower_dentry_parent = GET_LOWER_DENTRY(dentry->d_parent);
+-	lower_dentry = lookup_one_len(dentry->d_name.name, lower_dentry_parent,
+-				      dentry->d_name.len);
+ 
++	lower_dentry = dazukofs_lookup_one_lower(dentry->d_name.name,
++						 dentry->d_parent, nd);
+ 	if (IS_ERR(lower_dentry)) {
+ 		err = PTR_ERR(lower_dentry);
+ 		d_drop(dentry);

@@ -1,0 +1,154 @@
+====================
+ DazukoFS CHANGELOG
+====================
+
+3.1.4 (2011-03-19)
+- revert patch-014, read calls no longer restartable across signals
+
+
+3.1.4-rc3 (2010-11-07)
+- make read calls restartable across signals (patch-014)
+- implement mmap writing (patch-015)
+- rename function to a better name (patch-016)
+- fix list management when unclaiming an event (patch-017)
+- fix event memory management for event error handling (patch-018)
+
+
+3.1.4-rc2 (2010-10-17)
+- fix error handling when getting events
+
+
+3.1.4-rc1 (2010-10-16)
+- update to support Linux 2.6.36
+- return an error if registered process failed to open file
+- add support for getattr (patch-011)
+- add support for poll on dazukofs.ctrl (patch-012)
+- return EINVAL instead of EFAULT for invalid requests
+- fix an inode leak with rmdir
+- fix issue with mmap'd memory not updating (patch-013)
+
+
+3.1.3 (2010-07-03)
+- fix depmod arguments in Makefile
+
+
+3.1.3-rc3 (2010-05-30)
+- update to support Linux 2.6.34
+
+
+3.1.3-rc2 (2010-03-31)
+- update to support Linux 2.6.33
+
+
+3.1.3-rc1 (2010-01-01)
+- fix possible extended process masking for registered processes
+- return -EIO if the registered process reaches open file limit
+- add dummy mmap-write functions to avoid kernel crashes
+
+
+3.1.2 (2009-11-21)
+- fix improper pid reference counting in ignore device
+
+
+3.1.1 (2009-10-09)
+- add missing includes
+
+
+3.1.0 (2009-09-25)
+- 3.1.0-rc2 unmodified
+
+
+3.1.0-rc2 (2009-07-02)
+- do not allow mmap if not supported by lower filesystem
+- use direct instead of lookup pid functions
+
+
+3.1.0-rc1 (2009-06-28)
+- use pid framework to allow pid namespaces
+- fix case where a stackable filesystem stacks on top of DazukoFS
+- update to support Linux 2.6.30
+- use read-write semaphores instead of DIY locking to protect group list
+- rewrite lookup check for "." and ".."
+- rewrite fix for setuid/setgid
+- rewrite mmap handling to no longer allow PROT_WRITE with mmap()
+- correctly handle read() for a directory
+- report access events for all inode types
+- change getting access events (registered processes) back to interruptible
+- userlib: support a read-only dazukofs.ctrl if group already exists
+
+
+3.0.1-rc2 (2009-05-24)
+- fix creating new files (patch-010)
+
+
+3.0.1-rc1 (2009-04-30)
+- open files for registered process with O_LARGEFILE (patch-001)
+- allow mmap directly to lower layer (patch-002)
+- fix setuid/setgid handling (patch-003)
+- only allow mounting DazukoFS to a directory (patch-004)
+- only report access events for regular files (patch-005)
+- fix flushing dirty mmap pages (patch-006)
+- change checking access (anonymous processes) and getting access events 
+  (registered processes) to non-interruptible (patch-007)
+- correctly handle stat() for lower filesystems without extended
+  attributes (patch-008)
+- fix case where a stackable filesystem stacks on top of DazukoFS (patch-009)
+
+
+3.0.0 (2009-02-22)
+- added define for version number output
+- added patches for various other kernels
+
+
+3.0.0-rc6 (2009-02-08)
+- fix errors in 2.6.26 and opensuse patches
+
+
+3.0.0-rc5 (2009-02-03)
+- added missing includes
+- changed fops structures to const
+- cleanup coding style
+- simplified code to improve readability
+- removed unnecessary checks
+- replaced DIY group lock with rwlock
+- added many linuxdoc function comments
+- updated to support Linux 2.6.29-rc3
+
+
+3.0.0-rc4 (2008-11-30)
+- fix incorrect dentry/vfsmnt referencing when access denied
+- fix improper cleanup in several error handling conditions
+- internal code refactoring
+- ignore feature now alway on
+
+
+3.0.0-rc3 (2008-10-25)
+- added support for group tracking
+- internal code refactoring
+- fix memory leak on group removal
+- use group tracking in showfiles example
+- also catch SIGHUP in showfiles example
+- update to support Linux 2.6.27
+- add patch to support Linux 2.6.26
+
+
+3.0.0-rc2 (2008-10-09)
+- added /dev/dazukofs.ign device to allow processes to run hidden
+  (off by default, use CONFIG_DAZUKOFS_IGNORE to activate)
+- renamed "current" to "curr" to fix compiler errors
+- renamed caches
+- moved dazukofs_process_event() into event.c
+  (now only one function used by stacking layer)
+- renamed dazukofs_post_event() to dazukofs_check_access()
+- removed unnecessary INIT_LIST_HEAD call
+- use kmem_cache_zalloc to allocate dazukofs_event
+  (bugfix! variables were being used uninitialized!)
+- optimize and fix dazukofs_unclaim_event()
+  (dazukofs_event_container was not being freed)
+- check return value of copy_from_user()
+- take care of some compiler warnings
+- userlib: use /proc/self instead of building /proc/PID
+
+
+3.0.0-rc1 (2008-09-24)
+- the first public posting of DazukoFS 3.x code

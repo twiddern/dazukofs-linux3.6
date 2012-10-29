@@ -1,0 +1,325 @@
+================
+ ABOUT DAZUKOFS
+================
+
+DazukoFS is a stackable filesystem to allow userspace applications to
+perform online file access control. It was originally developed to
+support online virus scanners, but could be useful for any application
+that wishes to perform online file access control.
+
+NOTE: DazukoFS is completely separate from Dazuko. DazukoFS uses a
+      different interface and different devices than Dazuko. It is
+      possible to use Dazuko and DazukoFS at the same time since
+      they do not share any code or resources. However, DazukoFS
+      is meant to replace Dazuko as an online file access control
+      solution.
+
+
+
+=================
+ BUILD / INSTALL
+=================
+
+Below are brief instructions to get DazukoFS compiled and running on a
+system with a Linux 2.6.36 kernel. You may need to manually adjust the
+Makefile if you kernel sources are not in the default location.
+(Patches are provided for various other kernels. See the section below
+titled "PATCHING" for more information.)
+
+compile the kernel module
+  # make
+
+install the kernel module
+  # make dazukofs_install
+
+load the kernel module
+  # modprobe dazukofs
+
+verify that the module is loaded
+  # dmesg | grep dazukofs
+
+create a playground to test DazukoFS
+  # mkdir /tmp/dazukofs_test
+
+mount DazukoFS over the playground
+  # mount -t dazukofs /tmp/dazukofs_test /tmp/dazukofs_test
+
+verify that DazukoFS is mounted
+  # mount | grep dazukofs
+
+unmount DazukoFS
+  # umount /tmp/dazukofs_test
+
+
+
+==========
+ PATCHING
+==========
+
+In the "patches" directory there are patches available to modify the
+DazukoFS code to fit various other kernels. For example, if you are
+running openSUSE 11.1 you can patch the code with the following
+command:
+
+$ patch -p1 < patches/patch-opensuse-11.1
+
+There should not be any errors. If there are errors, then the patch
+is broken and should be reported on the dazuko-devel mailing list.
+
+Once the code has been patched you can build the kernel module as
+described in the section "BUILD / INSTALL" above.
+
+
+
+=========
+ TESTING
+=========
+
+A test application is provided. The test application simply prints out the
+online file access information that is captured by DazukoFS. Below are
+brief instructions to perform the test.
+
+make sure the DazukoFS kernel module is loaded
+  # modprobe dazukofs
+
+create a playground to test DazukoFS
+  # mkdir /tmp/dazukofs_test
+
+mount DazukoFS over the playground
+  # mount -t dazukofs /tmp/dazukofs_test /tmp/dazukofs_test
+
+copy some test files to the playground
+  # cp /bin/* /tmp/dazukofs_test
+
+build the test program
+  # cd test
+  # make
+
+start the test program
+  # env LD_LIBRARY_PATH=lib ./showfiles
+
+open another terminal and access files in the playground
+  $ find /tmp/dazukofs_test -type f | xargs file
+
+In the first terminal, the "showfiles" program should be showing the
+accessed files. You can end the test program by pressing CTRL-C.
+
+NOTE: The /proc filesystem must be mounted in order for the "showfiles"
+      program to display the file names.
+
+
+
+===============
+ MOUNT ON BOOT
+===============
+
+You may want DazukoFS to be mounted over certain directories when the
+machine boots. The easiest way to do this is to add the mounts to
+the end of /etc/fstab. They would look something like this:
+
+/usr   /usr   dazukofs   defaults   0   0
+/opt   /opt   dazukofs   defaults   0   0
+
+Of course, the dazukofs module must be loaded in order for this to work.
+Consult the documentation of your distribution to learn how to automatically
+load specific kernel modules on boot.
+
+
+
+=========
+ WARNING
+=========
+
+It is possible to mount DazukoFS to a directory other than the directory
+that is being stacked upon. For example:
+
+# mount -t dazukofs /usr/local/games /tmp/dazukofs_test
+
+When accessing files within /tmp/dazukofs_test, you will be accessing
+files in /usr/local/games (through dazukofs). When accessing files directly
+in /usr/local/games, dazukofs will not be involved (and will not detect
+the file access).
+
+THIS HAS POTENTIAL PROBLEMS!
+
+If files are modified directly in /usr/local/games, the dazukofs layer
+will not know about it. When dazukofs later tries to access those files,
+it may result in corrupt data or kernel crashes. As long as
+/usr/local/games is ONLY modified through dazukofs, there should not be
+any problems.
+
+
+
+==============
+ KNOWN ISSUES
+==============
+
+- DazukoFS does not support writing to memory mapped files. Attempting
+  to mmap files as read-write will result in an error. Applications
+  typically handle this by falling back to regular I/O. Read-only
+  memory mapping is supported by DazukoFS.
+
+- It is not possible to stack DazukoFS over the root filesystem (/).
+  Stacking over pseudo filesystems (/proc, /dev, /sys) has not been
+  tested and should be avoided.
+
+Please report problems to the dazuko-devel mailing list
+(subscription required):
+     http://lists.nongnu.org/mailman/listinfo/dazuko-devel
+
+
+
+=======================
+ DAZUKOFS APPLICATIONS
+=======================
+
+This last section is meant for developers of DazukoFS applications. This
+section will discuss the methods used for interacting with DazukoFS in
+order to perform online file access control.
+
+Although this section describes the low-level communication between
+application and kernel, be aware that a userspace library libdazukofs
+exists that has already implemented this communication. Using the
+library makes it very easy to write applications for DazukoFS. The
+library can be found on the Dazuko website: http://www.dazuko.org
+
+An application can register itself to receive notification about DazukoFS
+file access events. The application then also has the authority to block
+the file access.
+
+DazukoFS supports multiple groups. A group is a set of registered processes
+that work together. For each file access event, only one of the registered
+processes of a group will be notified. By registering multiple processes
+within the same group, an application will be able to perform file access
+control for multiple files simultaneously.
+
+A list of registered groups can be seen by reading from the
+/dev/dazukofs.ctrl device. For example:
+
+0:Group_A
+1:Group_B
+
+This means that the group named "Group_A" has been assigned the group id 0
+and the group name "Group_B" has been assigned the group id 1. Groups can
+be added by writing to the /dev/dazukofs.ctrl device. For example, writing:
+
+add=My_New_Group
+
+will create a new group, which will be assigned an available group id. The
+creation of the group should be verified by reading from the
+/dev/dazukofs.ctrl device. This is also necessary to see which group id was
+assigned to the new group.
+
+0:Group_A
+1:Group_B
+2:My_New_Group
+
+The new group "My_New_Group" has been assigned the group id 2. Group names
+are restricted to the characters: a-z A-Z 0-9 - _
+
+Each group has their own device /dev/dazukofs.N in order to interact with
+DazukoFS (where 'N' is the group id). For "My_New_Group" we are assigned
+/dev/dazukofs.2 to use.
+
+By opening the device /dev/dazukofs.N an application has registered itself.
+A read on the device will block until a file access event on DazukoFS has
+taken place. When a file access event has occured, the read will return with
+information about the file access event. For example:
+
+id=11
+fd=4
+pid=3226
+
+This means that the particular file access event has been given the id 11.
+The file descriptor 4 has been opened for the registered process. This file
+descriptor allows the registered process read-only access to the file being
+accessed. The pid of the accessing process is 3226.
+
+Using this information, the registered application must determine if the
+access should be denied or allowed. The application must then respond with
+an answer. This is done by writing to the device:
+
+id=11 r=0
+
+"r" is the response. A value of 0 means to allow the access. A value of 1
+means to deny the access.
+
+IMPORTANT: The application is responsible for closing the file descriptor
+           that was opened by DazukoFS.
+
+Since DazukoFS will open the file being accessed, the registered process
+only requires read/write permissions to the device in order to perform
+online file access control. The file is opened even if the registered
+application normally would not have access to the file. This allows an
+unprivileged process to perform file access control for any file on the
+system.
+
+By closing the device, the application will unregister itself.
+
+To provide crash protection for applications, groups can be added using
+the "addtrack" keyword instead of "add". The keyword "addtrack" tells
+DazukoFS to add the group and track the number of registered processes in
+that group. Tracking begins as soon as the first process has registered
+with DazukoFS. Once all processes of the group have unregistered, DazukoFS
+will automatically delete the group.
+
+If an application crashes, is killed, or ends without closing the device,
+DazukoFS will still unregister that process. Using "addtrack" will ensure
+that a created group is automatically deleted if the application is not
+able to shutdown in a clean manner.
+
+NOTE: If "addtrack" is used, it is necessary for the device to be kept open
+      the entire time the application is performing online file access
+      control. Otherwise the group may become unintentionally deleted.
+
+      If "add" is used, it is not necessary for the device to be kept open
+      while the application decides if access should be allowed. Actually,
+      DazukoFS doesn't care which process responds to a file access event.
+      DazukoFS is only interested in a response for the given event id.
+
+A group can be deleted by writing to the /dev/dazukofs.ctrl device. For
+example, writing:
+
+del=My_New_Group
+
+When a group is deleted, any processes registered with that group will
+be interrupted. Further reads on /dev/dazukofs.N will result in an error
+(until some other group has been assigned that group id).
+
+The deletion of the group should be verified by reading from the
+/dev/dazukofs.ctrl device.
+
+0:Group_A
+1:Group_B
+
+If no groups have been added, DazukoFS will allow all file access events. If,
+however, at least one group is added, DazukoFS will expect one process from
+each group to handle every file access event. Even if no processes are
+registered but one or more groups exist, DazukoFS will still wait for file
+access events to be handled by each group. For this reason it is important
+that an application deletes a group it has created, once it should no longer
+perform online file access control.
+
+All processes on the system that try to access files on a DazukoFS mount will
+require authorization (if at least one group exists). This is also true for
+registered process that try to access files on a DazukoFS mount.
+
+IMPORTANT: If registered processes access files on a DazukoFS mount, they
+           will cause new file access events that must be authorized. This
+           could lead to deadlock if not properly considered.
+
+Since the registered process receives an open file descriptor to the file
+being accessed, there should be no need for that process to open other
+files. However, if the process must open additional files (and these
+files potentially lie on a DazukoFS mount), it is possible for processes
+to hide themselves from DazukoFS.
+
+By opening the /dev/dazukofs.ign device, a process will be ignored by
+DazukoFS. It does not matter if the process is registered or not. No data
+must be written or read from the device. It simply needs to be opened.
+
+WARNING: Make sure the permissions for /dev/dazukofs.ign are securely
+         set. Otherwise, any process could potentially hide itself.
+
+As soon as the /dev/dazukofs.ign device is closed, the process is no
+longer hidden.

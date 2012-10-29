@@ -1,0 +1,39 @@
+Date: Tue, 02 Nov 2010 12:37:23 +0100
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: PATCH 2/3 rename function mark_pages_dirty() 
+
+
+The mark_pages_dirty() function actually does not mark any pages dirty.
+Instead it clears the pages Uptodate flags to indicate that the
+content is not longer
+valid.
+This patch renames the function to mark_pages_outdated().
+
+
+diff -Nurp dazukofs-3.1.4-rc2-patch1/file.c dazukofs-3.1.4-rc2-patch2/file.c
+--- dazukofs-3.1.4-rc2-patch1/file.c	2010-11-02 11:56:01.000000000 +0100
++++ dazukofs-3.1.4-rc2-patch2/file.c	2010-11-02 12:07:29.000000000 +0100
+@@ -88,10 +88,10 @@ static ssize_t dazukofs_read(struct file
+ 
+ /** 
+  * Description:
+- * Get all existing pages of the given interval that belong to the given 
+- * file and mark these pages dirty. 
++ * Get all existing pages of the given interval of the given 
++ * file and clear its "Uptodate" flag.
+  */ 
+-static void mark_pages_dirty(struct file *file, size_t count, loff_t pos)
++static void mark_pages_outdated(struct file *file, size_t count, loff_t pos)
+ {
+ 	struct page *page;
+ 	pgoff_t start;
+@@ -145,7 +145,7 @@ static ssize_t dazukofs_write(struct fil
+ 		 * cases (O_APPEND) the file pointer will have been modified
+ 		 * subsequently.
+ 		 */
+-		mark_pages_dirty(file, ret, pos_copy - ret);
++		mark_pages_outdated(file, ret, pos_copy - ret);
+ 		fsstack_copy_attr_atime(inode, lower_inode);
+ 	}
+ 

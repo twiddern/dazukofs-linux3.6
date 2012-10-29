@@ -1,0 +1,158 @@
+Date: Tue, 02 Nov 2010 12:31:28 +0100
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: PATCH 1/3 implement memory mapped writing 
+
+
+The following patches apply against dazukofs-3.1.4-rc2.
+
+1. Implement mmaped writing for dazukofs:
+
+In writepage() we look for the corresponding lower page and create it if it
+does not exist.
+Then we copy the content of the upper page to the lower page and mark
+it dirty.
+This causes marked pages to be written to disk as soon as the pages
+are synced (i.e
+due to an msync() or sync()).
+
+Note that this patch also removes some of the functions that do also cause
+writepage() to be called, like generic_file_aio_[read|write] and
+splice_read() since
+mmap has not been tested in conjunction with these functions - also
+writebegin()
+should not be called any more now.
+
+With this the only address space operations that we should need are
+readpage()
+and writepage().
+
+diff -Nurp dazukofs-3.1.4-rc2/file.c dazukofs-3.1.4-rc2-patch1/file.c
+--- dazukofs-3.1.4-rc2/file.c	2010-10-16 18:03:49.000000000 +0200
++++ dazukofs-3.1.4-rc2-patch1/file.c	2010-11-02 11:56:01.000000000 +0100
+@@ -319,7 +319,7 @@ static int dazukofs_mmap(struct file *fi
+ 	if (!lower_file->f_op || !lower_file->f_op->mmap)
+ 		return -ENODEV;
+ 
+-	return generic_file_readonly_mmap(file, vm);
++	return generic_file_mmap(file, vm);
+ }
+ 
+ /**
+@@ -342,9 +342,7 @@ static int dazukofs_mmap(struct file *fi
+ const struct file_operations dazukofs_main_fops = {
+ 	.llseek		= dazukofs_llseek,
+ 	.read		= dazukofs_read,
+-	.aio_read	= generic_file_aio_read,
+ 	.write		= dazukofs_write,
+-	.aio_write	= generic_file_aio_write,
+ 	.readdir	= dazukofs_readdir,
+ 	.unlocked_ioctl	= dazukofs_unlocked_ioctl,
+ #ifdef CONFIG_COMPAT
+@@ -356,7 +354,6 @@ const struct file_operations dazukofs_ma
+ 	.release	= dazukofs_release,
+ 	.fsync		= dazukofs_fsync,
+ 	.fasync		= dazukofs_fasync,
+-	.splice_read	= generic_file_splice_read,
+ };
+ 
+ /**
+@@ -392,5 +389,4 @@ const struct file_operations dazukofs_di
+ 	.release	= dazukofs_release,
+ 	.fsync		= dazukofs_fsync,
+ 	.fasync		= dazukofs_fasync,
+-	.splice_read	= generic_file_splice_read,
+ };
+diff -Nurp dazukofs-3.1.4-rc2/mmap.c dazukofs-3.1.4-rc2-patch1/mmap.c
+--- dazukofs-3.1.4-rc2/mmap.c	2010-05-30 12:58:22.000000000 +0200
++++ dazukofs-3.1.4-rc2-patch1/mmap.c	2010-11-02 12:00:45.000000000 +0100
+@@ -27,11 +27,6 @@
+ 
+ #include "dazukofs_fs.h"
+ 
+-static int dazukofs_writepage(struct page *page, struct writeback_control *wbc)
+-{
+-	/* mmap read-only */
+-	return -EINVAL;
+-}
+ 
+ /**
+  * Description: Called by the VM to read a page from backing store. The page
+@@ -98,14 +93,66 @@ out:
+ 	return err;
+ }
+ 
+-int dazukofs_write_begin(struct file *f, struct address_space *mapping,
+-			 loff_t pos, unsigned len, unsigned flags,
+-			 struct page **pagep, void **fsdata)
++
++
++/**
++ * Called if a page fault occured due to reading or writing to upper  mmaped 
++ * file. We get the lower page and mark it dirty, we DONT call lower 
++ * writepage() yet. Instead we let this be done by msync() or other kernel 
++ * facilities (pdflush) that try to write pages to disc. 
++ */
++static int dazukofs_writepage(struct page *page, struct writeback_control *wbc)
+ {
+-	/* mmap read-only */
+-	return -EINVAL;
++	struct inode *inode = page->mapping->host;
++	struct inode *lower_inode = get_lower_inode(inode);
++	struct page *lower_page;
++	char *page_data;
++	char *lower_page_data;
++	int rv = 0;
++
++	lower_page = grab_cache_page(lower_inode->i_mapping, page->index);
++
++	if (!lower_page) {
++		printk(KERN_ERR "dazukofs: Error getting lower page.\n");
++		rv = -ENOMEM;
++		goto fail;
++	}
++	
++	page_data = (char *) kmap(page);
++	if (!page_data) {
++		rv = -ENOMEM;
++		printk(KERN_ERR "dazukofs: Error mapping page.\n");
++		unlock_page(lower_page);
++		goto fail;
++	}
++
++	lower_page_data = (char *) kmap(lower_page);
++	if (!lower_page_data) {
++		rv = -ENOMEM;
++		printk(KERN_ERR "dazukofs: Error mapping lower page.\n");
++		kunmap(page);
++		unlock_page(lower_page);
++		goto fail;
++	}
++
++	memcpy(lower_page_data, page_data, PAGE_CACHE_SIZE);
++
++	kunmap(page);
++	kunmap(lower_page);
++
++	/* Mark lower page dirty. Dont call lower writepage() yet. */
++	set_page_dirty(lower_page);
++	unlock_page(lower_page);
++	SetPageUptodate(page);
++
++fail:
++	unlock_page(page);
++
++	return rv;
+ }
+ 
++
++
+ /**
+  * Unused operations:
+  *   - sync_page
+@@ -126,5 +173,4 @@ int dazukofs_write_begin(struct file *f,
+ const struct address_space_operations dazukofs_aops = {
+ 	.writepage	= dazukofs_writepage,
+ 	.readpage	= dazukofs_readpage,
+-	.write_begin	= dazukofs_write_begin,
+ };

@@ -1,0 +1,29 @@
+Date: Tue, 02 Nov 2010 12:43:54 +0100
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: PATCH 3/3 in unclaim_event() remove item from working list before putting it back on todo list
+
+
+This patch removes the event from the "working list" before it is put
+back on the "todo list" in unclaim_event().
+After the event has been put back to the todo list also the poll queue
+is woken up to notify callers of poll() that the event is readable (again).
+
+
+diff -Nurp dazukofs-3.1.4-rc2-patch2/event.c dazukofs-3.1.4-rc2-patch3/event.c
+--- dazukofs-3.1.4-rc2-patch2/event.c	2010-11-02 12:02:41.000000000 +0100
++++ dazukofs-3.1.4-rc2-patch3/event.c	2010-11-02 12:17:50.000000000 +0100
+@@ -860,11 +860,13 @@ static void unclaim_event(struct dazukof
+ {
+ 	/* put the event on the todo list */
+ 	mutex_lock(&work_mutex);
++	list_del(&ec->list);
+ 	list_add(&ec->list, &grp->todo_list.list);
+ 	mutex_unlock(&work_mutex);
+ 
+ 	/* wake up someone else to handle the event */
+ 	wake_up(&grp->queue);
++	wake_up(&grp->poll_queue);
+ }
+ 
+ /**

@@ -1,0 +1,38 @@
+Date: Tue, 21 Apr 2009 19:16:20 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] patch 5 for dazukofs release 3.0.0
+
+
+This patch is not a bug fix, but useful to increase performance:
+
+dazukofs reports open events for all kind of files. But this does
+mainly make sense for regular files (who wants to check
+fifos for malware?).
+Thus a simple check ensures that only open events for regular
+files are announced to userspace.
+
+(On my system a simple "find" command executed in /usr which was
+mounted with dazukofs resulted in over 90000 context switches -
+only caused by opening directories..)
+
+
+Index: dazukofs-3.0.0/file.c
+===================================================================
+--- dazukofs-3.0.0.orig/file.c	2009-04-30 11:51:48.321234895 +0200
++++ dazukofs-3.0.0/file.c	2009-04-30 11:51:53.671235430 +0200
+@@ -177,9 +177,11 @@ static int dazukofs_open(struct inode *i
+ 	struct file *lower_file;
+ 	int err;
+ 
+-	err = dazukofs_check_access(file->f_dentry, file->f_vfsmnt);
+-	if (err)
+-		goto error_out1;
++	if (S_ISREG(inode->i_mode)) {
++		err = dazukofs_check_access(file->f_dentry, file->f_vfsmnt);
++		if (err)
++			goto error_out1;
++	}
+ 
+ 	SET_FILE_INFO(file, kmem_cache_zalloc(dazukofs_file_info_cachep,
+ 		      GFP_KERNEL));

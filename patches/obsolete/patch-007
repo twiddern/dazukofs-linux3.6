@@ -1,0 +1,139 @@
+Date: Wed, 22 Apr 2009 16:22:02 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] patch 7 for dazukofs release 3.0.0
+
+
+Bug description:
+Dazukofs returns the -EINTR error code for the open() system call
+if a signal is received during the file access check performed by dazuko.
+ 
+This behaviour is not correct, since -EINTR is no error code that 
+applications
+or even the glibc would ever expect from an open() call. Thus signal 
+interruption
+should not be a reason for an open() to fail.
+
+To avoid returning an error code that might not be handled properly by the
+recipient, the file accessing process now waits uninterruptibly within the
+dazukofs code.
+
+This patch also exchanges freezable waits into interruptible ones, to 
+avoid the bug
+reported by Frantisek Hrbata (post from 27. Feb. 2009).
+
+
+Index: dazukofs-3.0.0/event.c
+===================================================================
+--- dazukofs-3.0.0.orig/event.c	2009-04-30 11:52:17.651234278 +0200
++++ dazukofs-3.0.0/event.c	2009-04-30 11:52:26.271236024 +0200
+@@ -23,7 +23,7 @@
+ #include <linux/file.h>
+ #include <linux/fs.h>
+ #include <linux/mount.h>
+-#include <linux/freezer.h>
++
+ 
+ #include "dev.h"
+ #include "dazukofs_fs.h"
+@@ -162,16 +162,25 @@ static int capture_group_count(int *cach
+ 	return err;
+ }
+ 
+-static int get_group_count(void)
++static int get_group_count_interruptible(void)
+ {
+ 	int cache = 0;
+-	int ret = wait_event_freezable(__group_count_queue,
++	int ret;
++
++	ret = wait_event_interruptible(__group_count_queue,
+ 				       capture_group_count(&cache) == 0);
+ 	if (ret == 0)
+ 		ret = __group_count;
+ 	return ret;
+ }
+ 
++static int get_group_count(void)
++{
++	int cache = 0;
++	wait_event(__group_count_queue, capture_group_count(&cache) == 0);
++	return __group_count;
++}
++
+ static void put_group_count(void)
+ {
+ 	mutex_lock(&group_count_mutex);
+@@ -399,7 +408,7 @@ int dazukofs_add_group(const char *name,
+ 	int already_exists;
+ 	int available_id = 0;
+ 	struct dazukofs_group *grp;
+-	int grp_count = get_group_count();
++	int grp_count = get_group_count_interruptible();
+ 
+ 	if (grp_count < 0) {
+ 		ret = grp_count;
+@@ -447,7 +456,7 @@ int dazukofs_remove_group(const char *na
+ 	int ret = 0;
+ 	struct dazukofs_group *grp;
+ 	struct list_head *pos;
+-	int grp_count = get_group_count();
++	int grp_count = get_group_count_interruptible();
+ 
+ 	if (grp_count < 0) {
+ 		ret = grp_count;
+@@ -701,11 +710,10 @@ int dazukofs_check_access(struct dentry 
+ {
+ 	struct dazukofs_event_container *ec_array[GROUP_COUNT];
+ 	struct dazukofs_event *evt;
+-	int grp_count = get_group_count();
++	int grp_count;
+ 	int err;
+ 
+-	if (grp_count < 0)
+-		return grp_count;
++	grp_count = get_group_count();
+ 
+ 	if (check_access_precheck(grp_count)) {
+ 		put_group_count();
+@@ -716,8 +724,7 @@ int dazukofs_check_access(struct dentry 
+ 
+ 	if (allocate_event_and_containers(&evt, ec_array, grp_count)) {
+ 		put_group_count();
+-		err = -ENOMEM;
+-		goto out;
++		return -ENOMEM;
+ 	}
+ 
+ 	evt->dentry = dget(dentry);
+@@ -728,14 +735,14 @@ int dazukofs_check_access(struct dentry 
+ 
+ 	put_group_count();
+ 
+-	/* wait until event completely processed or signal */
+-	err = wait_event_freezable(evt->queue, event_assigned(evt) == 0);
++	/* wait until event completely processed or all groups unregistered*/
++	wait_event(evt->queue, event_assigned(evt) == 0);
+ 
+ 	if (evt->deny)
+ 		err = -EPERM;
+ 
+ 	release_event(evt, 0, 0);
+-out:
++
+ 	return err;
+ }
+ 
+@@ -1005,9 +1012,9 @@ int dazukofs_get_event(unsigned long gro
+ 	}
+ 
+ 	while (1) {
+-		ret = wait_event_freezable(grp->queue,
+-					   is_event_available(grp) ||
+-					   grp->deprecated);
++		ret = wait_event_interruptible(grp->queue,
++					       is_event_available(grp) ||
++					       grp->deprecated);
+ 		if (ret != 0)
+ 			break;
+ 

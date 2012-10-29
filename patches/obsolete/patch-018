@@ -1,0 +1,29 @@
+Date: Tue, 02 Nov 2010 13:41:46 +0100
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: PATCH 4/4 dont free event container premeturely in dazukfos_return_event()
+
+
+In return_event(): if event response is type REPOST dont remove
+the event container from the working list (this will be done in
+unclaim_event(),
+see patch 3), and dont free it prematurely.
+
+
+diff -Nurp dazukofs-3.1.4-rc2-patch3/event.c dazukofs-3.1.4-rc2-patch4/event.c
+--- dazukofs-3.1.4-rc2-patch3/event.c	2010-11-02 12:17:50.000000000 +0100
++++ dazukofs-3.1.4-rc2-patch4/event.c	2010-11-02 13:35:04.000000000 +0100
+@@ -912,8 +912,11 @@ int dazukofs_return_event(unsigned long 
+ 		evt = ec->event;
+ 		if (evt->event_id == event_id) {
+ 			found = 1;
+-			list_del(pos);
+-			kmem_cache_free(dazukofs_event_container_cachep, ec);
++			if (response != REPOST) {
++				list_del(pos);
++				kmem_cache_free(dazukofs_event_container_cachep,
++						ec);
++			}
+ 			break;
+ 		}
+ 	}

@@ -1,0 +1,160 @@
+Date: Mon, 11 May 2009 17:57:25 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] IMPORTANT patch for dazukofs 3.0.1-rc1
+
+
+Hi all,
+
+the recent dazukofs release candidate contains a bug,
+that does not allow new files to be created within a dazukofs mount.
+This bug was unfortunately introduced with patch 9 for the former rc
+- sorry for that :( .
+
+This patch should solve the problem and also fix the bug that is reported
+ in patch 9 for rc 3.0.0.
+
+
+Greetings,
+Lino Sanfilippo
+
+
+Index: dazukofs-3.0.1-rc1/inode.c
+===================================================================
+--- dazukofs-3.0.1-rc1.orig/inode.c	2009-05-24 19:49:23.805549840 +0200
++++ dazukofs-3.0.1-rc1/inode.c	2009-05-24 19:49:44.375551848 +0200
+@@ -129,36 +129,68 @@ out:
+ 	return err;
+ }
+ 
+-static struct dentry *dazukofs_lookup_one_lower(const char *name,
+-						struct dentry *base,
++/* creates a new lower dentry */
++static struct dentry *dazukofs_new_lower_dentry(struct qstr *name,
++						struct dentry *lower_base,
+ 						struct nameidata *nd)
+ {
+-	struct dentry *lower_base;
+-	struct vfsmount *lower_mnt;
+-	struct vfsmount *vfsmount_save;
+-	struct dentry *dentry_save;
++	struct dentry *new_dentry;
++	struct dentry *tmp;
++	struct inode *lower_inode;
++
++	lower_inode = lower_base->d_inode;
++	/* XXX: is this check still necessary? (see __lookup_hash())
++	   This is (hopely) protected by locked upper inode */
++	if (IS_DEADDIR(lower_inode)) {
++		new_dentry = ERR_PTR(-ENOENT);
++		goto out;
++	}
++	tmp = d_alloc(lower_base, name);
++	if (!tmp) {
++		new_dentry = ERR_PTR(-ENOMEM);
++		goto out;
++	}
++	new_dentry = lower_inode->i_op->lookup(lower_inode, tmp, nd);
++	/* lookup() seemingly is allowed to return its own dentry (which
++	 * may indeed be a dentry or only an error). If so
++	 * we use it and discard ours. Otherwise we use ours */
++	if (!new_dentry)
++		new_dentry = tmp;
++	else
++		dput(tmp);
++	
++out:	
++	return new_dentry;
++}
++
++
++/* get lower dentry for given name */
++static struct dentry *dazukofs_lookup_one_lower(struct qstr *name,
++						struct dentry *lower_base,
++						struct vfsmount *lower_mnt)
++{
+ 	struct dentry *result;
++	struct nameidata nd;
+ 	int err;
+ 
+-	lower_base = GET_LOWER_DENTRY(base);
+-	lower_mnt = GET_LOWER_MNT(base);
+-
+-	vfsmount_save = nd->path.mnt;
+-	dentry_save = nd->path.dentry;
++	err = vfs_path_lookup(lower_base, lower_mnt, name->name, 0, &nd);
+ 
+-	err = vfs_path_lookup(lower_base, lower_mnt, name, nd->flags, nd);
+-	if (err) {
++	if (!err) {
++		/* inode already exists on disk */
++		result = nd.path.dentry;
++		/* we dont need the mount */
++		mntput(nd.path.mnt);
++		goto out;
++	}
++	if (err != -ENOENT) { /* this is a REAL error */
+ 		result = ERR_PTR(err);
+-		goto undo;
++		goto out;
+ 	}
+-	/* we dont need the mount */
+-	mntput(nd->path.mnt);
+-	result = nd->path.dentry;
+-undo:
+-	nd->path.mnt = vfsmount_save;
+-	nd->path.dentry = dentry_save;
+-
++	/* create a new (lower) dentry */
++	result = dazukofs_new_lower_dentry(name, lower_base, &nd);
++out:
+ 	return result;
++
+ }
+ 
+ 
+@@ -192,17 +224,19 @@ static struct dentry *dazukofs_lookup(st
+ 	}
+ 
+ 	dentry->d_op = &dazukofs_dops;
+-
+ 	lower_dentry_parent = GET_LOWER_DENTRY(dentry->d_parent);
++	lower_mnt = mntget(GET_LOWER_MNT(dentry->d_parent));
++
++	lower_dentry = dazukofs_lookup_one_lower(&dentry->d_name,
++						 lower_dentry_parent,
++						 lower_mnt);
+ 
+-	lower_dentry = dazukofs_lookup_one_lower(dentry->d_name.name,
+-						 dentry->d_parent, nd);
+ 	if (IS_ERR(lower_dentry)) {
+ 		err = PTR_ERR(lower_dentry);
++		mntput(lower_mnt);
+ 		d_drop(dentry);
+ 		goto out;
+ 	}
+-
+ 	BUG_ON(!atomic_read(&lower_dentry->d_count));
+ 
+ 	SET_DENTRY_INFO(dentry, kmem_cache_zalloc(dazukofs_dentry_info_cachep,
+@@ -210,11 +244,9 @@ static struct dentry *dazukofs_lookup(st
+ 
+ 	if (!GET_DENTRY_INFO(dentry)) {
+ 		err = -ENOMEM;
++		mntput(lower_mnt);
+ 		goto out_dput;
+ 	}
+-
+-	lower_mnt = mntget(GET_LOWER_MNT(dentry->d_parent));
+-
+ 	fsstack_copy_attr_atime(dir, lower_dentry_parent->d_inode);
+ 
+ 	SET_LOWER_DENTRY(dentry, lower_dentry, lower_mnt);
+@@ -230,6 +262,7 @@ static struct dentry *dazukofs_lookup(st
+ 	err = dazukofs_interpose(lower_dentry, dentry, dir->i_sb, 1);
+ 	if (err)
+ 		goto out_dput;
++
+ 	goto out;
+ 
+ out_dput:

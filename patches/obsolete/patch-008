@@ -1,0 +1,65 @@
+Date: Mon, 27 Apr 2009 12:42:44 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] patch 8 for dazukofs release 3.0.0 
+
+
+Bug description:
+If the underlaying filesystem does not implement one or more of the 
+inode operations
+related to extended attributes(i.e. vfat), dazukofs returns an ENOSYS 
+error code. This
+seems not to be the proper return value, since it results in ugly 
+"function not implemented"
+messages on some systems, that use extended attributes related system 
+calls (this happens for example
+on OpenSuse11.1 systems, every time that an "ls -l" command is executed 
+within an dazukofs
+that is mounted over vfat).
+The  error code set by the vfs layer is indeed -EOPNOTSUPP, if those 
+functions are not implemented.
+So this patch replaces the ENOSYS with  EOPNOTSUPP error codes to be 
+conform to the
+vfs behavior.
+
+
+Index: dazukofs-3.0.0/inode.c
+===================================================================
+--- dazukofs-3.0.0.orig/inode.c	2009-04-30 11:52:10.451234735 +0200
++++ dazukofs-3.0.0/inode.c	2009-04-30 11:52:27.881264761 +0200
+@@ -511,7 +511,7 @@ static int dazukofs_setxattr(struct dent
+ 
+ 	if (!lower_dentry_inode->i_op ||
+ 	    !lower_dentry_inode->i_op->setxattr) {
+-		err = -ENOSYS;
++		err = -EOPNOTSUPP;
+ 		goto out;
+ 	}
+ 
+@@ -543,7 +543,7 @@ static ssize_t dazukofs_getxattr(struct 
+ 
+ 	if (!lower_dentry_inode->i_op ||
+ 	    !lower_dentry_inode->i_op->getxattr) {
+-		err = -ENOSYS;
++		err = -EOPNOTSUPP;
+ 		goto out;
+ 	}
+ 
+@@ -572,7 +572,7 @@ static ssize_t dazukofs_listxattr(struct
+ 
+ 	if (!lower_dentry_inode->i_op ||
+ 	    !lower_dentry_inode->i_op->listxattr) {
+-		err = -ENOSYS;
++		err = -EOPNOTSUPP;
+ 		goto out;
+ 	}
+ 
+@@ -599,7 +599,7 @@ static int dazukofs_removexattr(struct d
+ 
+ 	if (!lower_dentry_inode->i_op ||
+ 	    !lower_dentry_inode->i_op->removexattr) {
+-		err = -ENOSYS;
++		err = -EOPNOTSUPP;
+ 		goto out;
+ 	}
+ 

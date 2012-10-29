@@ -1,0 +1,112 @@
+Date: Wed, 22 Apr 2009 15:33:09 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] patch 6 for dazukofs release 3.0.0
+
+
+This bug occured with dazukofs mounted over a reiserfs on a system with
+SLES 10.
+
+Bug description:
+Under some circumstances dazukofs inodes (instead of the lower inodes)
+are marked as dirty. If the pdflush daemon is woken up it tries to write 
+these
+inodes physically to disk. To do so, the writepages() function of the 
+dazukofs
+inodes address_space object is called. Since this function does not exist
+(it is set to NULL), the attempt to call it results in a kernel oops.
+
+So why are the dazukofs inodes marked dirty instead of the lower inodes?
+I could not find out the exact reason, but it definitely happens if
+generic_commit_write() is called (which in turn is called by 
+generic_file_write()
+which i.e is used by reiserfs to write inodes to disk).
+The generic_commit_write() function uses the inode that belongs to the page
+that has to be written. For some reason some pages seem to be connected to
+dazukofs inodes instead of the inodes of the lower filesystem.
+
+Anyway, the solution is to tell the kernel not to mark dazukofs inodes
+as dirty. This is done by using a backing_dev_info object with
+writeback capabilities explicitly disabled.
+
+
+Index: dazukofs-3.0.0/dazukofs_fs.h
+===================================================================
+--- dazukofs-3.0.0.orig/dazukofs_fs.h	2009-04-30 11:51:58.641233348 +0200
++++ dazukofs-3.0.0/dazukofs_fs.h	2009-04-30 11:52:10.451234735 +0200
+@@ -26,6 +26,7 @@
+ 
+ #define DAZUKOFS_VERSION "3.0.0"
+ 
++extern struct backing_dev_info dazukofs_dev_info;
+ extern struct kmem_cache *dazukofs_dentry_info_cachep;
+ extern struct kmem_cache *dazukofs_file_info_cachep;
+ extern struct file_operations dazukofs_main_fops;
+Index: dazukofs-3.0.0/inode.c
+===================================================================
+--- dazukofs-3.0.0.orig/inode.c	2009-04-30 11:51:58.541234872 +0200
++++ dazukofs-3.0.0/inode.c	2009-04-30 11:52:10.451234735 +0200
+@@ -52,6 +52,7 @@ static void dazukofs_init_inode(struct i
+ 	inode->i_version++;
+ 	inode->i_op = &dazukofs_main_iops;
+ 	inode->i_fop = &dazukofs_main_fops;
++	inode->i_mapping->backing_dev_info = &dazukofs_dev_info;
+ 	inode->i_mapping->a_ops = &dazukofs_aops;
+ }
+ 
+Index: dazukofs-3.0.0/super.c
+===================================================================
+--- dazukofs-3.0.0.orig/super.c	2009-04-30 11:51:58.501235078 +0200
++++ dazukofs-3.0.0/super.c	2009-04-30 11:52:10.451234735 +0200
+@@ -26,6 +26,7 @@
+ #include <linux/fs.h>
+ #include <linux/namei.h>
+ #include <linux/mount.h>
++#include <linux/backing-dev.h>
+ 
+ #include "dazukofs_fs.h"
+ #include "dev.h"
+@@ -35,6 +36,13 @@ static struct kmem_cache *dazukofs_sb_in
+ struct kmem_cache *dazukofs_dentry_info_cachep;
+ struct kmem_cache *dazukofs_file_info_cachep;
+ 
++struct backing_dev_info dazukofs_dev_info = {
++	.capabilities = BDI_CAP_NO_WRITEBACK |
++	                BDI_CAP_NO_ACCT_DIRTY |
++			BDI_CAP_NO_ACCT_WB,
++};
++
++
+ static struct inode *dazukofs_alloc_inode(struct super_block *sb)
+ {
+ 	struct dazukofs_inode_info *inodei;
+@@ -321,13 +329,20 @@ static int __init init_dazukofs_fs(void)
+ 	if (err)
+ 		goto error_out2;
+ 
+-	err = register_filesystem(&dazukofs_fs_type);
++	err = bdi_init(&dazukofs_dev_info);
++
+ 	if (err)
+ 		goto error_out3;
+ 
++	err = register_filesystem(&dazukofs_fs_type);
++	if (err)
++		goto error_out4;
++
+ 	printk(KERN_INFO "dazukofs: loaded, version=%s\n", DAZUKOFS_VERSION);
+ 	return 0;
+ 
++error_out4:
++	bdi_destroy(&dazukofs_dev_info);
+ error_out3:
+ 	destroy_caches();
+ error_out2:
+@@ -339,6 +354,7 @@ error_out1:
+ static void __exit exit_dazukofs_fs(void)
+ {
+ 	unregister_filesystem(&dazukofs_fs_type);
++	bdi_destroy(&dazukofs_dev_info);
+ 	destroy_caches();
+ 	dazukofs_dev_destroy();
+ 	printk(KERN_INFO "dazukofs: unloaded, version=%s\n", DAZUKOFS_VERSION);

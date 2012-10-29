@@ -1,0 +1,45 @@
+Date: Tue, 21 Apr 2009 17:39:44 +0200
+From: Lino Sanfilippo <lino.sanfilippo@avira.com>
+To: dazuko-devel@nongnu.org
+Subject: [Dazuko-devel] patch 1 for dazukofs release 3.0.0
+
+
+Hi all,
+
+this is the first patch of a series of patches that fixes some bugs, 
+that I encountered while
+testing dazukofs on various platforms. Please apply the patches 
+consecutively.
+I will do a short description for each bug:
+
+
+Bug description:
+On 32 Bit systems large file support may not be enabled. This prevents 
+processes from opening
+files larger than 4 GB.
+This may cause a failure of the dentry_open() function which is used by 
+dazukofs to get a
+file descriptor for an accessed file.
+This failure results in the file accessing process hanging infinitely 
+while the dazukofs kernel code
+tries to get an open file descriptor again and again, always failing due 
+to the file size limits.
+The solution is to open the file explicitly with large file support 
+enabled by setting the
+O_LARGEFILE flag.
+
+
+Index: dazukofs-3.0.0/event.c
+===================================================================
+--- dazukofs-3.0.0.orig/event.c	2009-04-30 11:51:11.461233531 +0200
++++ dazukofs-3.0.0/event.c	2009-04-30 11:51:46.801239521 +0200
+@@ -928,7 +928,8 @@ static int open_file(struct dazukofs_eve
+ 	/* add myself to be ignored on file open (to avoid recursion) */
+ 	mask_proc(&proc);
+ 
+-	ec->file = dentry_open(dget(evt->dentry), mntget(evt->mnt), O_RDONLY);
++	ec->file = dentry_open(dget(evt->dentry), mntget(evt->mnt),
++			       O_RDONLY | O_LARGEFILE);
+ 	if (IS_ERR(ec->file)) {
+ 		check_recursion();  /* remove myself from proc_list */
+ 		ret = PTR_ERR(ec->file);
